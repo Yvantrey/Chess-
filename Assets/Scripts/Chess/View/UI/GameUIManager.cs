@@ -99,4 +99,10 @@ public class GameUIManager : MonoBehaviour
 
         turnText.text = side == PieceColor.White ? "Turn : " + whitePlayer : "Turn : " + blackPlayer;
     }
+
+    void OnDestroy()
+    {
+        if (_controller != null)
+            _controller.Game.OnTurnChanged -= HandleTurnChanged;
+    }
 }
