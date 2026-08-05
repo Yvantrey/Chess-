@@ -44,20 +44,16 @@ public class GameUIManager : MonoBehaviour
 
         if (playerNamePanel != null)
             playerNamePanel.SetActive(false);
-        if (turnPanel != null)
-        {
-            turnPanel.SetActive(true);
-            var canvasGroup = turnPanel.GetComponent<CanvasGroup>();
-            if (canvasGroup == null)
-                canvasGroup = turnPanel.AddComponent<CanvasGroup>();
-            canvasGroup.blocksRaycasts = false;
-            canvasGroup.interactable = false;
-        }
+
+        ShowTurnPanel();
 
         if (_controller == null)
             _controller = FindAnyObjectByType<ChessGameController>();
         if (_controller != null)
+        {
+            _controller.Game.OnTurnChanged -= HandleTurnChanged;
             _controller.Game.OnTurnChanged += HandleTurnChanged;
+        }
     }
 
     public void UpdateTurn(bool isWhiteTurn)
@@ -72,6 +68,28 @@ public class GameUIManager : MonoBehaviour
     {
         if (turnPanel != null)
             turnPanel.SetActive(false);
+    }
+
+    public void ShowTurnPanel()
+    {
+        if (turnPanel == null)
+            return;
+
+        turnPanel.SetActive(true);
+        EnsureTurnPanelGroup();
+    }
+
+    void EnsureTurnPanelGroup()
+    {
+        if (turnPanel == null)
+            return;
+
+        var canvasGroup = turnPanel.GetComponent<CanvasGroup>();
+        if (canvasGroup == null)
+            canvasGroup = turnPanel.AddComponent<CanvasGroup>();
+
+        canvasGroup.blocksRaycasts = false;
+        canvasGroup.interactable = false;
     }
 
     void HandleTurnChanged(PieceColor side)
