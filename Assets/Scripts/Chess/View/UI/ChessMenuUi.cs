@@ -156,6 +156,7 @@ namespace Chess.View.UI
                 return;
 
             controller.ChooseMode(PlayMode.HotSeat);
+            _gameUIManager?.HideTurnPanel();
             _gameUIManager?.OpenNamePanel();
         }
 
