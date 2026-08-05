@@ -1,0 +1,512 @@
+using System.Collections;
+using System.Collections.Generic;
+using Chess.Core;
+using UnityEngine;
+
+namespace Chess.View
+{
+    /// <summary>
+    /// Builds board + pieces; animates moves/captures; rotates for the side to move.
+    /// </summary>
+    public class ChessBoardView : MonoBehaviour
+    {
+        [Header("Layout")]
+        [SerializeField] float squareSize = 0.1f;
+        [SerializeField] float pieceHeight = 0.08f;
+        [SerializeField] float boardY = 0.001f;
+
+        [Header("Look — olive & cream (designer set)")]
+        [SerializeField] Color lightSquare = new Color(0.93f, 0.89f, 0.82f);
+        [SerializeField] Color darkSquare = new Color(0.35f, 0.45f, 0.28f);
+        [SerializeField] Color whitePiece = new Color(0.94f, 0.90f, 0.84f);
+        [SerializeField] Color blackPiece = new Color(0.28f, 0.38f, 0.24f);
+        [SerializeField] Color boardFrame = new Color(0.12f, 0.12f, 0.12f);
+
+        [Header("Animation")]
+        [SerializeField] float moveDuration = 0.35f;
+        [SerializeField] float hopHeight = 0.04f;
+        [SerializeField] float captureDuration = 0.45f;
+        [SerializeField] float turnRotateDuration = 0.55f;
+
+        ChessGame _game;
+        readonly ChessSquareView[,] _squares = new ChessSquareView[8, 8];
+        readonly Dictionary<int, ChessPieceView> _piecesBySquare = new Dictionary<int, ChessPieceView>();
+        Transform _squaresRoot;
+        Transform _piecesRoot;
+        Transform _frame;
+        Transform _whiteCaptureTray;
+        Transform _blackCaptureTray;
+        int _whiteCaptureCount;
+        int _blackCaptureCount;
+        Square? _lastFrom;
+        Square? _lastTo;
+        ChessPieceView _selectedPiece;
+        Coroutine _turnRoutine;
+        Coroutine _moveRoutine;
+
+        public float SquareSize => squareSize;
+        public ChessGame Game => _game;
+        public bool IsBusy { get; private set; }
+
+        /// <summary>Hot-seat flips the board; vs Computer keeps White facing the camera.</summary>
+        public bool RotateOnTurnChange { get; set; } = true;
+
+        public void Bind(ChessGame game)
+        {
+            if (_game != null)
+            {
+                _game.OnBoardChanged -= RefreshHighlights;
+                _game.OnNewGame -= HandleNewGame;
+                _game.OnMoveApplied -= HandleMoveApplied;
+            }
+
+            _game = game;
+            EnsureHierarchy();
+            BuildBoardVisualsIfNeeded();
+            _game.OnBoardChanged += RefreshHighlights;
+            _game.OnNewGame += HandleNewGame;
+            _game.OnMoveApplied += HandleMoveApplied;
+            HandleNewGame();
+        }
+
+        void OnDestroy()
+        {
+            if (_game == null)
+                return;
+            _game.OnBoardChanged -= RefreshHighlights;
+            _game.OnNewGame -= HandleNewGame;
+            _game.OnMoveApplied -= HandleMoveApplied;
+        }
+
+        void EnsureHierarchy()
+        {
+            if (_squaresRoot == null)
+            {
+                var go = new GameObject("Squares");
+                go.transform.SetParent(transform, false);
+                _squaresRoot = go.transform;
+            }
+
+            if (_piecesRoot == null)
+            {
+                var go = new GameObject("Pieces");
+                go.transform.SetParent(transform, false);
+                _piecesRoot = go.transform;
+            }
+
+            if (_whiteCaptureTray == null)
+            {
+                var go = new GameObject("WhiteCaptureTray");
+                go.transform.SetParent(transform, false);
+                go.transform.localPosition = new Vector3(-squareSize * 5.1f, boardY, 0f);
+                _whiteCaptureTray = go.transform;
+            }
+
+            if (_blackCaptureTray == null)
+            {
+                var go = new GameObject("BlackCaptureTray");
+                go.transform.SetParent(transform, false);
+                go.transform.localPosition = new Vector3(squareSize * 5.1f, boardY, 0f);
+                _blackCaptureTray = go.transform;
+            }
+        }
+
+        void BuildBoardVisualsIfNeeded()
+        {
+            if (_squares[0, 0] != null)
+                return;
+
+            // Soft frame under the squares
+            var frameGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            frameGo.name = "BoardFrame";
+            frameGo.transform.SetParent(transform, false);
+            frameGo.transform.localPosition = new Vector3(0f, boardY - 0.004f, 0f);
+            frameGo.transform.localScale = new Vector3(squareSize * 8.4f, 0.008f, squareSize * 8.4f);
+            ApplyColor(frameGo.GetComponent<Renderer>(), boardFrame);
+            Object.Destroy(frameGo.GetComponent<Collider>());
+            _frame = frameGo.transform;
+
+            for (var file = 0; file < 8; file++)
+            for (var rank = 0; rank < 8; rank++)
+            {
+                var isLight = (file + rank) % 2 == 1;
+                var squareGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                squareGo.name = $"Square_{file}_{rank}";
+                squareGo.transform.SetParent(_squaresRoot, false);
+                squareGo.transform.localPosition = SquareToLocal(new Square(file, rank), boardY);
+                squareGo.transform.localScale = new Vector3(squareSize * 0.96f, 0.003f, squareSize * 0.96f);
+
+                var view = squareGo.AddComponent<ChessSquareView>();
+                view.Initialize(file, rank, isLight ? lightSquare : darkSquare);
+                _squares[file, rank] = view;
+            }
+        }
+
+        void HandleNewGame()
+        {
+            if (_moveRoutine != null)
+                StopCoroutine(_moveRoutine);
+            if (_turnRoutine != null)
+                StopCoroutine(_turnRoutine);
+
+            IsBusy = false;
+            _lastFrom = null;
+            _lastTo = null;
+            _whiteCaptureCount = 0;
+            _blackCaptureCount = 0;
+            ClearSelectedPieceVisual();
+            ClearTrayChildren(_whiteCaptureTray);
+            ClearTrayChildren(_blackCaptureTray);
+            transform.localRotation = Quaternion.identity;
+            RebuildAllPieces();
+            RefreshHighlights();
+        }
+
+        static void ClearTrayChildren(Transform tray)
+        {
+            if (tray == null)
+                return;
+            for (var i = tray.childCount - 1; i >= 0; i--)
+                Destroy(tray.GetChild(i).gameObject);
+        }
+
+        void HandleMoveApplied(MoveEvent moveEvent)
+        {
+            if (_moveRoutine != null)
+                StopCoroutine(_moveRoutine);
+            _moveRoutine = StartCoroutine(PlayMoveAnimation(moveEvent));
+        }
+
+        IEnumerator PlayMoveAnimation(MoveEvent moveEvent)
+        {
+            IsBusy = true;
+            ClearSelectedPieceVisual();
+            var move = moveEvent.Move;
+            _lastFrom = move.From;
+            _lastTo = move.To;
+
+            ChessPieceView capturedView = null;
+            if (move.IsEnPassant)
+            {
+                var capRank = moveEvent.SideThatMoved == PieceColor.White ? move.To.Rank - 1 : move.To.Rank + 1;
+                TryTakePiece(new Square(move.To.File, capRank), out capturedView);
+            }
+            else if (moveEvent.WasCapture)
+            {
+                TryTakePiece(move.To, out capturedView);
+            }
+
+            if (!TryTakePiece(move.From, out var moverView) || moverView == null)
+            {
+                RebuildAllPieces();
+                IsBusy = false;
+                yield break;
+            }
+
+            Coroutine captureCo = null;
+            if (capturedView != null)
+            {
+                var trayPos = NextTrayLocalPosition(moveEvent.SideThatMoved);
+                capturedView.transform.SetParent(
+                    moveEvent.SideThatMoved == PieceColor.White ? _whiteCaptureTray : _blackCaptureTray,
+                    true);
+                captureCo = StartCoroutine(capturedView.AnimateToTray(trayPos, captureDuration));
+            }
+
+            var target = PieceLocalPosition(move.To);
+            yield return moverView.AnimateMoveTo(target, moveDuration, hopHeight);
+            moverView.SetSquare(move.To);
+            _piecesBySquare[Key(move.To)] = moverView;
+
+            if (move.IsCastle)
+                yield return AnimateCastleRook(move);
+
+            if (move.Promotion != PieceType.None)
+            {
+                RemovePieceAt(move.To);
+                var promoted = CreatePieceVisual(new Piece(move.Promotion, moveEvent.SideThatMoved), move.To);
+                _piecesBySquare[Key(move.To)] = promoted;
+            }
+
+            if (captureCo != null)
+                yield return captureCo;
+
+            if (RotateOnTurnChange)
+                yield return RotateForSide(moveEvent.SideToMoveAfter);
+            else
+                transform.localRotation = Quaternion.identity;
+
+            IsBusy = false;
+            RefreshHighlights();
+        }
+
+        Vector3 NextTrayLocalPosition(PieceColor sideThatCaptured)
+        {
+            int index;
+            if (sideThatCaptured == PieceColor.White)
+            {
+                index = _whiteCaptureCount;
+                _whiteCaptureCount++;
+            }
+            else
+            {
+                index = _blackCaptureCount;
+                _blackCaptureCount++;
+            }
+
+            var col = index % 2;
+            var row = index / 2;
+            return new Vector3(col * squareSize * 0.55f, pieceHeight * 0.2f, -row * squareSize * 0.55f);
+        }
+
+        IEnumerator AnimateCastleRook(Move move)
+        {
+            Square rookFrom;
+            Square rookTo;
+            if (move.To.File == 6)
+            {
+                rookFrom = new Square(7, move.From.Rank);
+                rookTo = new Square(5, move.From.Rank);
+            }
+            else
+            {
+                rookFrom = new Square(0, move.From.Rank);
+                rookTo = new Square(3, move.From.Rank);
+            }
+
+            if (!TryTakePiece(rookFrom, out var rook) || rook == null)
+                yield break;
+
+            yield return rook.AnimateMoveTo(PieceLocalPosition(rookTo), moveDuration * 0.9f, hopHeight * 0.4f);
+            rook.SetSquare(rookTo);
+            _piecesBySquare[Key(rookTo)] = rook;
+        }
+
+        IEnumerator RotateForSide(PieceColor side)
+        {
+            var targetYaw = side == PieceColor.White ? 0f : 180f;
+            var start = transform.localRotation;
+            var end = Quaternion.Euler(0f, targetYaw, 0f);
+            var elapsed = 0f;
+
+            while (elapsed < turnRotateDuration)
+            {
+                elapsed += Time.deltaTime;
+                var t = Mathf.SmoothStep(0f, 1f, elapsed / turnRotateDuration);
+                transform.localRotation = Quaternion.Slerp(start, end, t);
+                yield return null;
+            }
+
+            transform.localRotation = end;
+        }
+
+        void RefreshHighlights()
+        {
+            if (_game == null)
+                return;
+
+            ClearHighlights();
+
+            if (_lastFrom.HasValue)
+                _squares[_lastFrom.Value.File, _lastFrom.Value.Rank].SetHighlight(SquareHighlight.LastMoveFrom);
+            if (_lastTo.HasValue)
+                _squares[_lastTo.Value.File, _lastTo.Value.Rank].SetHighlight(SquareHighlight.LastMoveTo);
+
+            // Glow the king square when that side is in check
+            if (!_game.IsGameOver && MoveGenerator.IsInCheck(_game.Board, _game.SideToMove))
+            {
+                var king = _game.Board.FindKing(_game.SideToMove);
+                if (king.HasValue)
+                    _squares[king.Value.File, king.Value.Rank].SetHighlight(SquareHighlight.InCheck);
+            }
+
+            ClearSelectedPieceVisual();
+            if (!_game.SelectedSquare.HasValue)
+                return;
+
+            var sel = _game.SelectedSquare.Value;
+            _squares[sel.File, sel.Rank].SetHighlight(SquareHighlight.Selected);
+
+            if (_piecesBySquare.TryGetValue(Key(sel), out var piece) && piece != null)
+            {
+                _selectedPiece = piece;
+                piece.SetSelected(true);
+            }
+
+            foreach (var move in _game.LegalMovesForSelection)
+            {
+                var highlight = move.IsCapture || move.IsEnPassant
+                    ? SquareHighlight.LegalCapture
+                    : SquareHighlight.LegalMove;
+                _squares[move.To.File, move.To.Rank].SetHighlight(highlight);
+            }
+        }
+
+        void ClearSelectedPieceVisual()
+        {
+            if (_selectedPiece != null)
+            {
+                _selectedPiece.SetSelected(false);
+                _selectedPiece = null;
+            }
+        }
+
+        void ClearHighlights()
+        {
+            for (var file = 0; file < 8; file++)
+            for (var rank = 0; rank < 8; rank++)
+                _squares[file, rank]?.SetHighlight(SquareHighlight.None);
+        }
+
+        void RebuildAllPieces()
+        {
+            foreach (var piece in _piecesBySquare.Values)
+            {
+                if (piece != null)
+                    Destroy(piece.gameObject);
+            }
+            _piecesBySquare.Clear();
+
+            for (var file = 0; file < 8; file++)
+            for (var rank = 0; rank < 8; rank++)
+            {
+                var square = new Square(file, rank);
+                var piece = _game.Board.GetPiece(square);
+                if (piece.IsEmpty)
+                    continue;
+                _piecesBySquare[Key(square)] = CreatePieceVisual(piece, square);
+            }
+        }
+
+        bool TryTakePiece(Square square, out ChessPieceView view)
+        {
+            var key = Key(square);
+            if (_piecesBySquare.TryGetValue(key, out view))
+            {
+                _piecesBySquare.Remove(key);
+                return view != null;
+            }
+
+            view = null;
+            return false;
+        }
+
+        void RemovePieceAt(Square square)
+        {
+            if (TryTakePiece(square, out var view) && view != null)
+                Destroy(view.gameObject);
+        }
+
+        ChessPieceView CreatePieceVisual(Piece piece, Square square)
+        {
+            var go = BuildPieceMesh(piece);
+            go.transform.SetParent(_piecesRoot, false);
+            go.transform.localPosition = PieceLocalPosition(square);
+
+            var view = go.AddComponent<ChessPieceView>();
+            view.Configure(piece.Type, piece.Color, square);
+            return view;
+        }
+
+        GameObject BuildPieceMesh(Piece piece)
+        {
+            // Stacked primitives for a slightly cuter silhouette
+            var root = new GameObject($"{piece.Color}_{piece.Type}");
+            var color = piece.Color == PieceColor.White ? whitePiece : blackPiece;
+
+            void AddPart(PrimitiveType type, Vector3 localPos, Vector3 localScale)
+            {
+                var part = GameObject.CreatePrimitive(type);
+                part.transform.SetParent(root.transform, false);
+                part.transform.localPosition = localPos;
+                part.transform.localScale = localScale;
+                ApplyColor(part.GetComponent<Renderer>(), color);
+                var col = part.GetComponent<Collider>();
+                if (col != null)
+                    Object.Destroy(col);
+            }
+
+            var s = squareSize;
+            switch (piece.Type)
+            {
+                case PieceType.Pawn:
+                    AddPart(PrimitiveType.Cylinder, new Vector3(0f, 0.012f * s / 0.1f, 0f), new Vector3(0.32f, 0.12f, 0.32f) * s);
+                    AddPart(PrimitiveType.Sphere, new Vector3(0f, 0.038f * s / 0.1f, 0f), new Vector3(0.28f, 0.28f, 0.28f) * s);
+                    break;
+                case PieceType.Rook:
+                    AddPart(PrimitiveType.Cube, new Vector3(0f, 0.02f * s / 0.1f, 0f), new Vector3(0.34f, 0.28f, 0.34f) * s);
+                    AddPart(PrimitiveType.Cube, new Vector3(0f, 0.04f * s / 0.1f, 0f), new Vector3(0.38f, 0.1f, 0.38f) * s);
+                    break;
+                case PieceType.Knight:
+                    AddPart(PrimitiveType.Cube, new Vector3(0f, 0.018f * s / 0.1f, 0f), new Vector3(0.3f, 0.22f, 0.34f) * s);
+                    AddPart(PrimitiveType.Cube, new Vector3(0.04f * s / 0.1f, 0.04f * s / 0.1f, 0.02f * s / 0.1f), new Vector3(0.22f, 0.2f, 0.28f) * s);
+                    break;
+                case PieceType.Bishop:
+                    AddPart(PrimitiveType.Cylinder, new Vector3(0f, 0.02f * s / 0.1f, 0f), new Vector3(0.28f, 0.22f, 0.28f) * s);
+                    AddPart(PrimitiveType.Sphere, new Vector3(0f, 0.05f * s / 0.1f, 0f), new Vector3(0.22f, 0.32f, 0.22f) * s);
+                    break;
+                case PieceType.Queen:
+                    AddPart(PrimitiveType.Cylinder, new Vector3(0f, 0.02f * s / 0.1f, 0f), new Vector3(0.34f, 0.2f, 0.34f) * s);
+                    AddPart(PrimitiveType.Sphere, new Vector3(0f, 0.05f * s / 0.1f, 0f), new Vector3(0.34f, 0.34f, 0.34f) * s);
+                    AddPart(PrimitiveType.Sphere, new Vector3(0f, 0.07f * s / 0.1f, 0f), new Vector3(0.14f, 0.14f, 0.14f) * s);
+                    break;
+                case PieceType.King:
+                    AddPart(PrimitiveType.Cylinder, new Vector3(0f, 0.024f * s / 0.1f, 0f), new Vector3(0.34f, 0.28f, 0.34f) * s);
+                    AddPart(PrimitiveType.Cube, new Vector3(0f, 0.06f * s / 0.1f, 0f), new Vector3(0.12f, 0.22f, 0.12f) * s);
+                    AddPart(PrimitiveType.Cube, new Vector3(0f, 0.068f * s / 0.1f, 0f), new Vector3(0.22f, 0.08f, 0.08f) * s);
+                    break;
+                default:
+                    AddPart(PrimitiveType.Cube, Vector3.zero, Vector3.one * 0.3f * s);
+                    break;
+            }
+
+            // One collider on root for tapping
+            var box = root.AddComponent<BoxCollider>();
+            box.size = new Vector3(0.45f, 0.7f, 0.45f) * s;
+            box.center = new Vector3(0f, 0.35f * s, 0f);
+            return root;
+        }
+
+        static void ApplyColor(Renderer renderer, Color color)
+        {
+            if (renderer == null)
+                return;
+            var block = new MaterialPropertyBlock();
+            block.SetColor("_BaseColor", color);
+            block.SetColor("_Color", color);
+            renderer.SetPropertyBlock(block);
+        }
+
+        Vector3 PieceLocalPosition(Square square) =>
+            SquareToLocal(square, boardY + pieceHeight * 0.35f);
+
+        public Vector3 SquareToLocal(Square square, float y)
+        {
+            var x = (square.File - 3.5f) * squareSize;
+            var z = (square.Rank - 3.5f) * squareSize;
+            return new Vector3(x, y, z);
+        }
+
+        static int Key(Square square) => square.Rank * 8 + square.File;
+
+        public bool TryGetSquare(Collider collider, out Square square)
+        {
+            square = default;
+            var view = collider.GetComponentInParent<ChessSquareView>();
+            if (view == null)
+                return false;
+            square = new Square(view.File, view.Rank);
+            return true;
+        }
+
+        public bool TryGetSquareFromPiece(Collider collider, out Square square)
+        {
+            square = default;
+            var piece = collider.GetComponentInParent<ChessPieceView>();
+            if (piece == null)
+                return false;
+            square = piece.Square;
+            return true;
+        }
+    }
+}
