@@ -150,7 +150,7 @@ namespace Chess.View.UI
             RefreshPanels();
         }
 
-        void ChooseHotSeat()
+        void ChooseHotSeatMode()
         {
             if (controller == null)
                 return;
@@ -250,7 +250,7 @@ namespace Chess.View.UI
                 new Color(0.35f, 0.3f, 0.28f), new Vector2(0, 130), new Vector2(760, 40), bodyFont, FontStyle.Normal);
 
             CreateModeButton(card.transform, "Hot-seat", "2 players · one device\nBoard flips each turn", Mint,
-                new Vector2(-180, -10), ChooseHotSeat);
+                new Vector2(-180, -10), ChooseHotSeatMode);
             CreateModeButton(card.transform, "vs Computer", "You play White\nMinimax AI replies", Accent,
                 new Vector2(180, -10), () => {
                     controller.ChooseMode(PlayMode.VersusComputer);
